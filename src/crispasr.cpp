@@ -5628,6 +5628,70 @@ bool whisper_vad_detect_speech(struct whisper_vad_context* vctx, const float* sa
     return true;
 }
 
+// [TIUNE PATCH] Streaming single-frame Silero VAD — see scripts/patches/ in the
+// Tiune repo. whisper_vad_detect_speech() clears the LSTM state and unrolls the
+// whole buffer, which resets temporal context on every call and so can't drive
+// an incremental capture loop. These two functions expose the per-frame step
+// from that loop while PERSISTING the LSTM h/c state across calls: the state
+// tensors live in vctx->buffer and the graph copies the updated state back into
+// them each compute (see whisper_vad_build_lstm_layer), so simply not clearing
+// the buffer carries state frame-to-frame. Feed exactly one n_window frame per
+// step (shorter is zero-padded); call the reset at capture start.
+//
+// Returns the speech probability in [0, 1], or -1 on error.
+float crispasr_vad_stream_step(struct whisper_vad_context* vctx, const float* samples, int n_samples) {
+    if (!vctx || !samples || n_samples <= 0) {
+        return -1.0f;
+    }
+    if ((int)vctx->window_buf.size() != vctx->n_window) {
+        vctx->window_buf.resize(vctx->n_window, 0.0f);
+    }
+    auto& window = vctx->window_buf;
+    const int copy = std::min(n_samples, vctx->n_window);
+    std::copy(samples, samples + copy, window.begin());
+    if (copy < vctx->n_window) {
+        std::fill(window.begin() + copy, window.end(), 0.0f);
+    }
+
+    auto& sched = vctx->sched.sched;
+    ggml_cgraph* gf = whisper_vad_build_graph(*vctx);
+    ggml_backend_sched_reset(sched);
+    if (!ggml_backend_sched_alloc_graph(sched, gf)) {
+        CRISPASR_LOG_ERROR("%s: failed to allocate the compute buffer\n", __func__);
+        return -1.0f;
+    }
+
+    struct ggml_tensor* frame = ggml_graph_get_tensor(gf, "frame");
+    struct ggml_tensor* prob = ggml_graph_get_tensor(gf, "prob");
+
+    // n_threads=1 + persistent work_buf: same anti-#132 pattern as
+    // detect_speech (the graph is tiny; threadpool churn would dominate).
+    struct ggml_cplan cplan = ggml_graph_plan(gf, /*n_threads=*/1, vctx->threadpool);
+    if (vctx->work_buf.size() < cplan.work_size) {
+        vctx->work_buf.resize(cplan.work_size);
+    }
+    cplan.work_data = vctx->work_buf.data();
+
+    ggml_backend_tensor_set(frame, window.data(), 0, ggml_nelements(frame) * sizeof(float));
+
+    float p = -1.0f;
+    if (ggml_graph_compute(gf, &cplan) != GGML_STATUS_SUCCESS) {
+        CRISPASR_LOG_ERROR("%s: failed to compute VAD graph\n", __func__);
+    } else {
+        ggml_backend_tensor_get(prob, &p, 0, sizeof(float));
+    }
+    ggml_backend_sched_reset(sched);
+    return p;
+}
+
+// [TIUNE PATCH] Zero the streaming LSTM h/c state — call at the start of each
+// capture so a new utterance doesn't inherit the previous one's state.
+void crispasr_vad_stream_reset(struct whisper_vad_context* vctx) {
+    if (vctx) {
+        ggml_backend_buffer_clear(vctx->buffer, 0);
+    }
+}
+
 int whisper_vad_segments_n_segments(struct whisper_vad_segments* segments) {
     return segments->data.size();
 }

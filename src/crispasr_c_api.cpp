@@ -793,6 +793,25 @@ CA_EXPORT void crispasr_vad_free(float* spans) {
         std::free(spans);
 }
 
+// [TIUNE PATCH] Streaming Silero VAD context open/close — convenience wrappers
+// over whisper_vad_init_from_file_with_params so a wrapper (Rust) can drive the
+// per-frame streaming step API (crispasr_vad_stream_step/reset in crispasr.cpp)
+// without binding the whisper_vad_context_params struct. GPU stays off (the VAD
+// graph is tiny and whisper_vad_init_context forces CPU anyway).
+CA_EXPORT struct whisper_vad_context* crispasr_vad_stream_open(const char* model_path, int n_threads) {
+    if (!model_path)
+        return nullptr;
+    whisper_vad_context_params vcp = whisper_vad_default_context_params();
+    if (n_threads > 0)
+        vcp.n_threads = n_threads;
+    return whisper_vad_init_from_file_with_params(model_path, vcp);
+}
+
+CA_EXPORT void crispasr_vad_stream_close(struct whisper_vad_context* vctx) {
+    if (vctx)
+        whisper_vad_free(vctx);
+}
+
 // =========================================================================
 // LCS chunk-boundary deduplication
 // =========================================================================
@@ -1677,6 +1696,12 @@ struct crispasr_session {
     bool whisper_suppress_nst = false;
     std::string whisper_suppress_regex;
     bool whisper_carry_initial_prompt = false;
+    // Whisper initial-prompt text (whisper-only). Maps onto
+    // wparams.initial_prompt on every dispatch — the mechanism by which a
+    // caller biases the decoder toward domain vocabulary. Empty = nullptr
+    // (whisper's "no prompt" sentinel). Set via crispasr_session_set_initial_prompt.
+    // [TIUNE PATCH] added downstream; see scripts/patches/ in the Tiune repo.
+    std::string whisper_initial_prompt;
 
     // Whisper decoder-fallback thresholds (whisper-only — none of
     // these fields exist on the other backends' wparams equivalent).
@@ -4864,6 +4889,9 @@ static crispasr_session_result* transcribe_single(crispasr_session* s, const flo
         wparams.suppress_nst = s->whisper_suppress_nst;
         wparams.carry_initial_prompt = s->whisper_carry_initial_prompt;
         wparams.suppress_regex = s->whisper_suppress_regex.empty() ? nullptr : s->whisper_suppress_regex.c_str();
+        // [TIUNE PATCH] initial-prompt text for vocab biasing. Empty → nullptr
+        // (whisper's "no prompt" sentinel), same convention as suppress_regex.
+        wparams.initial_prompt = s->whisper_initial_prompt.empty() ? nullptr : s->whisper_initial_prompt.c_str();
         // GBNF grammar-constrained sampling (whisper-only). The
         // `grammar_rules_ptrs` vector and the parsed rules it points
         // into both live on the session struct so they outlive the
@@ -9745,6 +9773,16 @@ CA_EXPORT int crispasr_session_set_ask(crispasr_session* s, const char* prompt) 
     if (!s)
         return -1;
     s->ask = prompt ? prompt : "";
+    return 0;
+}
+
+// [TIUNE PATCH] Set the whisper initial-prompt text (vocab biasing). Applied
+// to wparams.initial_prompt on each whisper dispatch; empty/null clears it.
+// Whisper-only — other backends ignore whisper_initial_prompt.
+CA_EXPORT int crispasr_session_set_initial_prompt(crispasr_session* s, const char* prompt) {
+    if (!s)
+        return -1;
+    s->whisper_initial_prompt = prompt ? prompt : "";
     return 0;
 }
 

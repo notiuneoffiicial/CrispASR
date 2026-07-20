@@ -1371,6 +1371,22 @@ impl Session {
         Ok(())
     }
 
+    /// [TIUNE PATCH] Set the whisper initial-prompt text — the decoder is
+    /// seeded with these tokens so domain vocabulary is recognized rather than
+    /// spell-corrected after the fact. Whisper-only; other backends ignore it.
+    /// An empty string clears any prior prompt. Persists across transcribe
+    /// calls until changed.
+    pub fn set_initial_prompt(&self, prompt: &str) -> Result<(), String> {
+        let cprompt = CString::new(prompt).map_err(|e| e.to_string())?;
+        let rc = unsafe {
+            crispasr_sys::crispasr_session_set_initial_prompt(self.handle, cprompt.as_ptr())
+        };
+        if rc != 0 {
+            return Err(format!("set_initial_prompt failed (rc={})", rc));
+        }
+        Ok(())
+    }
+
     /// qwen3-tts VoiceDesign: natural-language voice description.
     pub fn set_instruct(&self, instruct: &str) -> Result<(), String> {
         let c = CString::new(instruct).map_err(|e| e.to_string())?;
@@ -1593,6 +1609,64 @@ impl VadOptions {
 impl Drop for Session {
     fn drop(&mut self) {
         unsafe { crispasr_sys::crispasr_session_close(self.handle) }
+    }
+}
+
+// =========================================================================
+// [TIUNE PATCH] Streaming Silero VAD — per-frame probability with persisted
+// LSTM state, for driving an incremental capture loop. Unlike the batch VAD
+// (crispasr_vad_segments / transcribe_vad), this keeps state across step()
+// calls so a caller can feed frames live and run its own hysteresis.
+// =========================================================================
+
+/// A streaming Silero VAD over a GGUF model. Feed one frame per `step`; the
+/// LSTM state carries across calls until `reset`.
+///
+/// Not `Sync` — the underlying context holds mutable per-step state.
+pub struct VadStream {
+    handle: *mut crispasr_sys::WhisperVadContext,
+}
+
+unsafe impl Send for VadStream {}
+
+impl VadStream {
+    /// Open a streaming VAD from a Silero GGUF (e.g. `ggml-silero-v5.1.2.bin`).
+    pub fn open(model_path: &str, n_threads: i32) -> Result<Self, String> {
+        let path = CString::new(model_path).map_err(|e| format!("invalid path: {e}"))?;
+        let handle =
+            unsafe { crispasr_sys::crispasr_vad_stream_open(path.as_ptr(), n_threads) };
+        if handle.is_null() {
+            return Err(format!("failed to open VAD model: {model_path}"));
+        }
+        Ok(Self { handle })
+    }
+
+    /// Run one frame (16 kHz mono `f32`; the model's window is 512 samples,
+    /// shorter is zero-padded) and return the speech probability in `[0, 1]`.
+    /// State from previous `step` calls carries into this one.
+    pub fn step(&mut self, frame: &[f32]) -> Result<f32, String> {
+        let p = unsafe {
+            crispasr_sys::crispasr_vad_stream_step(
+                self.handle,
+                frame.as_ptr(),
+                frame.len() as c_int,
+            )
+        };
+        if p < 0.0 {
+            return Err("VAD step failed".to_string());
+        }
+        Ok(p)
+    }
+
+    /// Zero the LSTM state — call at the start of each new utterance.
+    pub fn reset(&mut self) {
+        unsafe { crispasr_sys::crispasr_vad_stream_reset(self.handle) }
+    }
+}
+
+impl Drop for VadStream {
+    fn drop(&mut self) {
+        unsafe { crispasr_sys::crispasr_vad_stream_close(self.handle) }
     }
 }
 

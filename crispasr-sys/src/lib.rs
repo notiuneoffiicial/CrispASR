@@ -99,6 +99,11 @@ pub struct CrispasrSession(c_void);
 #[repr(C)]
 pub struct CrispasrSessionResult(c_void);
 
+/// [TIUNE PATCH] Opaque whisper VAD context (Silero). Open via
+/// `crispasr_vad_stream_open`, free via `crispasr_vad_stream_close`.
+#[repr(C)]
+pub struct WhisperVadContext(c_void);
+
 /// Opaque streaming-decoder handle returned by
 /// `crispasr_session_stream_open`. Must be freed with
 /// `crispasr_stream_close`. (PLAN #62)
@@ -606,6 +611,25 @@ extern "C" {
         carry_initial_prompt: c_int,
     ) -> c_int;
     pub fn crispasr_session_set_ask(s: *mut CrispasrSession, prompt: *const c_char) -> c_int;
+    // [TIUNE PATCH] whisper-only initial-prompt text for vocab biasing.
+    pub fn crispasr_session_set_initial_prompt(
+        s: *mut CrispasrSession,
+        prompt: *const c_char,
+    ) -> c_int;
+
+    // [TIUNE PATCH] Streaming single-frame Silero VAD. Opaque context via
+    // open/close; step carries LSTM state across calls (reset zeroes it).
+    pub fn crispasr_vad_stream_open(
+        model_path: *const c_char,
+        n_threads: c_int,
+    ) -> *mut WhisperVadContext;
+    pub fn crispasr_vad_stream_close(vctx: *mut WhisperVadContext);
+    pub fn crispasr_vad_stream_step(
+        vctx: *mut WhisperVadContext,
+        samples: *const c_float,
+        n_samples: c_int,
+    ) -> c_float;
+    pub fn crispasr_vad_stream_reset(vctx: *mut WhisperVadContext);
     pub fn crispasr_session_detect_language(
         s: *mut CrispasrSession,
         pcm: *const c_float,

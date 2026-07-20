@@ -614,6 +614,8 @@ CRISPASR_API int crispasr_session_set_alt_n(struct crispasr_session* s, int n);
 CRISPASR_API int crispasr_session_set_whisper_decode_extras(struct crispasr_session* s, int suppress_nst,
                                                             const char* suppress_regex, int carry_initial_prompt);
 CRISPASR_API int crispasr_session_set_ask(struct crispasr_session* s, const char* prompt);
+/* [TIUNE PATCH] whisper-only initial-prompt text for vocab biasing. */
+CRISPASR_API int crispasr_session_set_initial_prompt(struct crispasr_session* s, const char* prompt);
 
 // TTS synthesis — returns malloc'd float32 PCM at 24 kHz mono.
 // Caller frees with crispasr_pcm_free(). Returns nullptr on failure.
@@ -767,6 +769,15 @@ CRISPASR_API struct whisper_vad_context* whisper_vad_init_with_params(struct whi
                                                                       struct whisper_vad_context_params params);
 
 CRISPASR_API bool whisper_vad_detect_speech(struct whisper_vad_context* vctx, const float* samples, int n_samples);
+
+/* [TIUNE PATCH] Streaming single-frame Silero VAD: step carries LSTM state
+   across calls (unlike detect_speech, which resets per buffer); reset zeroes it.
+   Feed one n_window (512 @ 16 kHz) frame per step. Returns prob [0,1] or -1. */
+CRISPASR_API float crispasr_vad_stream_step(struct whisper_vad_context* vctx, const float* samples, int n_samples);
+CRISPASR_API void crispasr_vad_stream_reset(struct whisper_vad_context* vctx);
+/* [TIUNE PATCH] open/close a streaming VAD context from a Silero GGUF path. */
+CRISPASR_API struct whisper_vad_context* crispasr_vad_stream_open(const char* model_path, int n_threads);
+CRISPASR_API void crispasr_vad_stream_close(struct whisper_vad_context* vctx);
 
 CRISPASR_API int whisper_vad_n_probs(struct whisper_vad_context* vctx);
 CRISPASR_API float* whisper_vad_probs(struct whisper_vad_context* vctx);
