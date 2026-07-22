@@ -593,6 +593,20 @@ static int moonshine_run_encoder(struct moonshine_context* ctx, const float* aud
     struct ggml_context* ctx0 = nullptr;
     if (ctx->cached_enc_gf && ctx->cached_enc_n_samples == n_samples) {
         graph = ctx->cached_enc_gf;
+        // Tiune fix: the cached graph's tensors still carry data/buffer
+        // pointers from the previous scheduler allocation. Decoder graphs run
+        // on the same sched between encoder calls and resize/free its galloc
+        // buffers, so those pointers are stale. ggml_gallocr_init_tensor()
+        // skips any tensor whose data != NULL, so without clearing them the
+        // compute reads/writes through dangling pointers (SIGSEGV in
+        // ggml_backend_tensor_set, or a silently corrupted/empty transcript).
+        // Clearing data/buffer (view_src stays) makes the allocator rebind
+        // every tensor exactly like a freshly built graph.
+        for (struct ggml_tensor* t = ggml_get_first_tensor(ctx->cached_enc_ctx); t != nullptr;
+             t = ggml_get_next_tensor(ctx->cached_enc_ctx, t)) {
+            t->data = nullptr;
+            t->buffer = nullptr;
+        }
     } else {
         if (ctx->cached_enc_ctx) {
             ggml_free(ctx->cached_enc_ctx);
