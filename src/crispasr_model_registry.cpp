@@ -8,6 +8,13 @@
 #include <cstdlib>
 #ifndef _WIN32
 #include <unistd.h>
+#else
+// MSVC has no <unistd.h>; isatty/fileno live in <io.h> under underscored
+// names (the unprefixed POSIX spellings are only declared when the
+// deprecated-name compatibility macros are on, which they are not here).
+#include <io.h>
+#define isatty _isatty
+#define fileno _fileno
 #endif
 #include <cstdio>
 #include <vector>
