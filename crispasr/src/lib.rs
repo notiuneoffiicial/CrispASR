@@ -305,7 +305,7 @@ impl Session {
 
     /// List of backend names the loaded CrispASR library was compiled with.
     pub fn available_backends() -> Vec<String> {
-        let mut buf = vec![0i8; 256];
+        let mut buf = vec![0 as c_char; 256];
         let mut n = unsafe {
             crispasr_sys::crispasr_session_available_backends(buf.as_mut_ptr(), buf.len() as i32)
         };
@@ -335,7 +335,7 @@ impl Session {
     /// Detect the backend from a GGUF file without opening it.
     pub fn detect_backend(model_path: &str) -> Result<String, String> {
         let path = CString::new(model_path).map_err(|e| format!("invalid path: {e}"))?;
-        let mut buf = [0i8; 64];
+        let mut buf = [0 as c_char; 64];
         let n = unsafe {
             crispasr_sys::crispasr_detect_backend_from_gguf(
                 path.as_ptr(),
